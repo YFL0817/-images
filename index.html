@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的私人图床</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f5f3ff;color:#29243b;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{padding:28px 20px;background:linear-gradient(135deg,#7867e8,#b28af5);color:white}
+header h1{margin:0 0 8px;font-size:26px}
+header p{margin:0;font-size:14px;opacity:.9}
+main{max-width:900px;margin:20px auto;padding:0 14px}
+.panel{background:white;border-radius:18px;padding:18px;margin-bottom:18px;box-shadow:0 5px 22px #40308012}
+h2{font-size:18px;margin:0 0 14px}
+input,button{font:inherit}
+input[type=text],input[type=password]{width:100%;padding:12px;border:1px solid #ddd7f0;border-radius:10px;margin:6px 0 12px}
+button{border:0;border-radius:10px;padding:11px 15px;background:#7867e8;color:white;cursor:pointer}
+button.secondary{background:#eeeafd;color:#5544bc}
+button.danger{background:#fff0f0;color:#c33}
+.note{font-size:13px;color:#777;margin-top:8px;line-height:1.6}
+.drop{border:2px dashed #b8a8f2;background:#faf9ff;border-radius:14px;text-align:center;padding:30px 12px;cursor:pointer}
+.drop p{margin:6px 0;color:#7665c7}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+#status{font-size:14px;line-height:1.7;white-space:pre-wrap}
+#gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.card{border:1px solid #eee8fa;border-radius:14px;padding:10px;min-width:0}
+.preview{height:160px;background:#f5f5f8;border-radius:9px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.preview img{max-width:100%;max-height:100%;object-fit:contain}
+.preview audio{width:95%}
+.filename{font-size:13px;overflow-wrap:anywhere;margin:10px 0}
+.linkbox{font-size:12px!important;padding:9px!important}
+.card .actions button{font-size:12px;padding:8px}
+#cropModal{display:none;position:fixed;inset:0;background:#000b;z-index:10;overflow:auto;padding:20px}
+.cropbox{max-width:600px;margin:30px auto;background:white;padding:16px;border-radius:16px}
+#cropImage{display:block;max-width:100%;max-height:55vh;margin:12px auto}
+footer{text-align:center;color:#999;font-size:12px;padding:20px}
+</style>
+</head>
+<body>
+<header>
+<h1>✦ 我的私人图床</h1>
+<p>图片与音频管理 · 多文件上传 · 一键复制外链</p>
+</header>
+
+<main>
+<section class="panel">
+<h2>① GitHub 连接设置</h2>
+<label>Personal Access Token</label>
+<input id="token" type="password" placeholder="粘贴你的 GitHub Token">
+<div class="actions">
+<button onclick="saveToken()">保存 Token</button>
+<button class="secondary" onclick="forgetToken()">清除本地 Token</button>
+</div>
+<p class="note">Token 只保存在当前浏览器的 localStorage 中。不要把 Token 分享给他人。请只在自己的设备上使用本网页。</p>
+</section>
+
+<section class="panel">
+<h2>② 上传文件</h2>
+<div class="drop" id="drop">
+<p>点击选择文件，或将文件拖到这里</p>
+<p>支持多选图片与音频</p>
+<input id="files" type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,image/svg+xml,image/bmp,image/x-icon,audio/*" style="display:none">
+</div>
+<p class="note">支持 JPG、PNG、GIF、WEBP、SVG、BMP、ICO，以及 MP3、WAV、M4A、OGG、FLAC、AAC</p>
+<div class="actions" style="margin-top:12px">
+<button onclick="uploadFiles()">上传所选文件</button>
+<button class="secondary" onclick="loadGallery()">刷新图库</button>
+</div>
+<div id="status" style="margin-top:12px"></div>
+</section>
+
+<section class="panel">
+<h2>③ 我的图库</h2>
+<div id="gallery">请先保存 Token，然后刷新图库</div>
+</section>
+</main>
+
+<div id="cropModal">
+<div class="cropbox">
+<h2>图片裁剪</h2>
+<p class="note">拖动图片上的裁剪框调整范围，再点击确认裁剪</p>
+<img id="cropImage" alt="待裁剪图片">
+<div class="actions">
+<button onclick="confirmCrop()">确认裁剪</button>
+<button class="secondary" onclick="closeCrop()">取消</button>
+</div>
+</div>
+</div>
+
+<footer>Personal Image Hosting · GitHub Pages</footer>
+
+<script>
+const USERNAME = "YFL0817";
+const REPO = "-images";
+const BRANCH = "main";
+const API = `https://api.github.com/repos/${USERNAME}/${REPO}`;
+const RAW = `https://${USERNAME.toLowerCase()}.github.io/${REPO}/`;
+
+let selectedFiles = [];
+let cropSource = null;
+let cropName = "";
+let cropRect = null;
+let cropDragging = false;
+let cropStart = null;
+
+const $ = id => document.getElementById(id);
+
+function getToken(){return localStorage.getItem("image_host_token")||""}
+
+function saveToken(){
+ const t=$("token").value.trim();
+ if(!t){alert("请先输入 Token");return}
+ localStorage.setItem("image_host_token",t);
+ $("token").value="";
+ alert("Token 已保存在当前浏览器");
+ loadGallery();
+}
+
+function forgetToken(){
+ localStorage.removeItem("image_host_token");
+ $("token").value="";
+ alert("已清除本地保存的 Token");
+}
+
+function headers(){
+ return {"Authorization":"Bearer "+getToken(),"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
+}
+
+function setStatus(msg){$("status").textContent=msg}
+
+$("drop").onclick=e=>{
+ if(e.target.id!=="files")$("files").click()
+};
+
+$("files").onchange=e=>{
+ selectedFiles=Array.from(e.target.files||[]);
+ setStatus("已选择 "+selectedFiles.length+" 个文件");
+};
+
+$("drop").ondragover=e=>{e.preventDefault();$("drop").style.background="#eee9ff"};
+$("drop").ondragleave=()=>{$("drop").style.background="#faf9ff"};
+$("drop").ondrop=e=>{
+ e.preventDefault();
+ $("drop").style.background="#faf9ff";
+ selectedFiles=Array.from(e.dataTransfer.files||[]);
+ setStatus("已选择 "+selectedFiles.length+" 个文件");
+};
+
+function safeName(name){
+ return name.normalize("NFKC").replace(/[\/\\?#%:*|"<>]/g,"_").replace(/\s+/g,"_");
+}
+
+function readBase64(file){
+ return new Promise((resolve,reject)=>{
+  const reader=new FileReader();
+  reader.onload=()=>resolve(reader.result.split(",")[1]);
+  reader.onerror=reject;
+  reader.readAsDataURL(file);
+ });
+}
+
+async function uploadFiles(){
+ if(!getToken()){alert("请先设置 GitHub Token");return}
+ if(!selectedFiles.length){alert("请先选择文件");return}
+ const files=[...selectedFiles];
+ selectedFiles=[];
+ $("files").value="";
+ let messages=[];
+ for(let i=0;i<files.length;i++){
+  const f=files[i];
+  try{
+   setStatus(`正在上传 ${i+1}/${files.length}：${f.name}`);
+   const content=await readBase64(f);
+   const path=safeName(f.name);
+   const res=await fetch(`${API}/contents/${encodeURIComponent(path)}`,{
+    method:"PUT",
+    headers:{...headers(),"Content-Type":"application/json"},
+    body:JSON.stringify({message:"Upload "+path,content,branch:BRANCH})
+   });
+   const data=await res.json();
+   if(!res.ok)throw Error(data.message||"上传失败");
+   messages.push("✓ "+f.name+" 上传成功");
+  }catch(err){messages.push("✗ "+f.name+"："+err.message)}
+ }
+ setStatus(messages.join("\n"));
+ await loadGallery();
+}
+
+async function loadGallery(){
+ if(!getToken()){$("gallery").textContent="请先设置 Token";return}
+ $("gallery").textContent="正在加载...";
+ try{
+  const res=await fetch(`${API}/contents/`,{headers:headers()});
+  const data=await res.json();
+  if(!res.ok)throw Error(data.message||"读取失败");
+  const allowed=/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|mp3|wav|m4a|ogg|flac|aac)$/i;
+  const files=data.filter(f=>f.type==="file"&&allowed.test(f.name));
+  $("gallery").innerHTML="";
+  if(!files.length){$("gallery").textContent="图库暂时没有图片或音频";return}
+  for(const f of files){
+   const url=RAW+encodeURIComponent(f.name);
+   const audio=/\.(mp3|wav|m4a|ogg|flac|aac)$/i.test(f.name);
+   const card=document.createElement("div");
+   card.className="card";
+   const preview=document.createElement("div");
+   preview.className="preview";
+   if(audio){
+    const a=document.createElement("audio");
+    a.controls=true;a.src=url;preview.appendChild(a);
+   }else{
+    const img=document.createElement("img");
+    img.src=url;img.alt=f.name;preview.appendChild(img);
+   }
+   const name=document.createElement("div");
+   name.className="filename";name.textContent=f.name;
+   const input=document.createElement("input");
+   input.className="linkbox";input.value=url;input.readOnly=true;
+   input.style.width="100%";
+   const actions=document.createElement("div");
+   actions.className="actions";
+   actions.append(
+    makeButton("复制外链","",()=>copyText(url)),
+    makeButton("打开","secondary",()=>window.open(url,"_blank")),
+    makeButton("删除","danger",()=>deleteFile(f.name,f.sha))
+   );
+   card.append(preview,name,input,actions);
+   $("gallery").appendChild(card);
+  }
+ }catch(err){$("gallery").textContent="加载失败："+err.message}
+}
+
+function makeButton(text,cls,fn){
+ const b=document.createElement("button");
+ b.textContent=text;
+ if(cls)b.className=cls;
+ b.onclick=fn;
+ return b;
+}
+
+async function copyText(text){
+ try{
+  await navigator.clipboard.writeText(text);
+  alert("已复制链接");
+ }catch(e){
+  prompt("请手动复制链接",text);
+ }
+}
+
+async function deleteFile(name,sha){
+ if(!confirm("确定删除 "+name+" 吗？"))return;
+ try{
+  const res=await fetch(`${API}/contents/${encodeURIComponent(name)}`,{
+   method:"DELETE",
+   headers:{...headers(),"Content-Type":"application/json"},
+   body:JSON.stringify({message:"Delete "+name,sha,branch:BRANCH})
+  });
+  const data=await res.json();
+  if(!res.ok)throw Error(data.message||"删除失败");
+  alert("删除成功");
+  loadGallery();
+ }catch(err){alert("删除失败："+err.message)}
+}
+
+/* 裁剪功能：通过选择矩形区域裁剪图片 */
+function openCrop(file){
+ if(!file.type.startsWith("image/")||file.type==="image/svg+xml"){
+  alert("请选择普通位图文件进行裁剪");return
+ }
+ cropSource=file;cropName=file.name;
+ const reader=new FileReader();
+ reader.onload=()=>{
+  $("cropImage").src=reader.result;
+  $("cropModal").style.display="block";
+  cropRect=null;
+ };
+ reader.readAsDataURL(file);
+}
+
+$("cropImage").onpointerdown=e=>{
+ const img=$("cropImage");
+ const r=img.getBoundingClientRect();
+ cropStart={x:e.clientX-r.left,y:e.clientY-r.top};
+ cropRect={x:cropStart.x,y:cropStart.y,w:0,h:0};
+ cropDragging=true;
+ img.setPointerCapture(e.pointerId);
+};
+
+$("cropImage").onpointermove=e=>{
+ if(!cropDragging)return;
+ const r=$("cropImage").getBoundingClientRect();
+ const x=e.clientX-r.left,y=e.clientY-r.top;
+ cropRect.w=x-cropStart.x;cropRect.h=y-cropStart.y;
+};
+
+$("cropImage").onpointerup=()=>{cropDragging=false};
+
+async function confirmCrop(){
+ if(!cropSource){closeCrop();return}
+ const img=$("cropImage");
+ if(!cropRect||Math.abs(cropRect.w)<5||Math.abs(cropRect.h)<5){
+  alert("请在图片上拖动选择裁剪范围");
+  return;
+ }
+ const box=img.getBoundingClientRect();
+ const sx=img.naturalWidth/img.clientWidth;
+ const sy=img.naturalHeight/img.clientHeight;
+ const x=Math.max(0,Math.min(img.naturalWidth,(Math.min(cropStart.x,cropStart.x+cropRect.w))*sx));
+ const y=Math.max(0,Math.min(img.naturalHeight,(Math.min(cropStart.y,cropStart.y+cropRect.h))*sy));
+ const w=Math.min(img.naturalWidth-x,Math.abs(cropRect.w)*sx);
+ const h=Math.min(img.naturalHeight-y,Math.abs(cropRect.h)*sy);
+ const canvas=document.createElement("canvas");
+ canvas.width=Math.max(1,Math.round(w));canvas.height=Math.max(1,Math.round(h));
+ const ctx=canvas.getContext("2d");
+ ctx.drawImage(img,x,y,w,h,0,0,canvas.width,canvas.height);
+ const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png"));
+ if(!blob){alert("裁剪失败");return}
+ const file=new File([blob],cropName.replace(/\.[^.]+$/,"")+"_cropped.png",{type:"image/png"});
+ selectedFiles.push(file);
+ closeCrop();
+ alert("裁剪完成，已加入待上传列表。点击上传文件即可上传");
+ setStatus("已加入裁剪图片："+file.name);
+}
+
+function closeCrop(){
+ $("cropModal").style.display="none";
+ cropSource=null;cropRect=null;
+}
+
+$("token").value="";
+</script>
+</body>
+</html>
